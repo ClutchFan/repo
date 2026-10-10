@@ -16,7 +16,7 @@ def test_substring_name_returns_candidate():
     result = r.resolve("apple")
     assert result == Company("AAPL", 320193, "Apple Inc.")
 
-def test_ambiguous_ticker_raises():
+def test_multiple_match_raises_ambiguous():
     # Test with a string that would match multiple candidates
     class FakeSECWithMore:
         def get_ticker_index(self):
@@ -29,3 +29,10 @@ def test_ambiguous_ticker_raises():
     with pytest.raises(AmbiguousTicker) as e:
         r.resolve("apple")
     assert len(e.value.candidates) >= 2
+
+def test_zero_match_raises_ambiguous_empty():
+    # Test with a string that matches nothing
+    r = TickerResolver(FakeSEC())
+    with pytest.raises(AmbiguousTicker) as e:
+        r.resolve("zzzznotreal")
+    assert len(e.value.candidates) == 0
