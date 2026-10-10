@@ -77,8 +77,11 @@ def single_quarters(facts: list[Fact]) -> list[Fact]:
     1. Native single-quarter facts (duration <= 120 days) are kept.
     2. For each multi-quarter fact (duration > 120 days), find its longest
        prefix fact (same period_start, earlier period_end, same concept &
-       fiscal year). Derive a quarter fact = multi - prefix.
-    3. Cumulative / annual source facts are excluded from output.
+       fiscal year) -- prefixes include earlier cumulative facts even though
+       those cumulatives are excluded from output. Derive a quarter fact =
+       multi - prefix.
+    3. One fact per (concept, period_end): native wins over derived.
+    4. Cumulative / annual source facts are excluded from output.
     """
     # Group by (concept, fiscal_year)
     by_concept_year: dict[tuple[str, int], list[Fact]] = {}
@@ -88,12 +91,14 @@ def single_quarters(facts: list[Fact]) -> list[Fact]:
                 (f.concept, f.provenance.fiscal_year), []
             ).append(f)
 
-    result: list[Fact] = []
+    # result keyed by (concept, period_end) -- native always wins over derived
+    result: dict[tuple[str, date], Fact] = {}
 
     for (concept, fy), group in by_concept_year.items():
-        # Native single-quarter facts go directly into the result
+        # Native single-quarter facts seed the result directly
         native = [g for g in group if duration_days(g) <= 120]
-        result.extend(native)
+        for n in native:
+            result[(n.concept, n.period_end)] = n
 
         # Multi-quarter / cumulative facts: derive single quarters, do NOT include originals
         multis = sorted(
@@ -101,8 +106,10 @@ def single_quarters(facts: list[Fact]) -> list[Fact]:
             key=lambda g: duration_days(g),
         )
 
-        # Build working set of facts with known period_start that can act as prefixes.
-        # Start with native quarters, add derived facts as we go.
+        # Prefix pool starts with native quarters.
+        # Earlier cumulative facts (even though excluded from output) also serve
+        # as prefixes -- they are added to the pool as we process multis in
+        # ascending duration order.
         prefixes: list[Fact] = list(native)
 
         for multi in multis:
@@ -116,6 +123,8 @@ def single_quarters(facts: list[Fact]) -> list[Fact]:
                     if best_prefix is None or g.period_end > best_prefix.period_end:
                         best_prefix = g
             if best_prefix is None:
+                # Still add multi to prefix pool so even-longer multis can use it
+                prefixes.append(multi)
                 continue
 
             derived_value = multi.value - best_prefix.value
@@ -135,10 +144,18 @@ def single_quarters(facts: list[Fact]) -> list[Fact]:
                 calendar_frame(multi.period_end),
                 newprov,
             )
-            result.append(derived)
+            # Native quarter wins over derived at same (concept, period_end)
+            key = (derived.concept, derived.period_end)
+            if key not in result:
+                result[key] = derived
+
+            # Add the multi itself to the prefix pool so longer cumulatives
+            # (e.g. 9M, FY) can use it as their prefix.
+            prefixes.append(multi)
+            # Also add derived to prefix pool for completeness
             prefixes.append(derived)
 
-    return result
+    return list(result.values())
 
 
 def align_frame(facts: list[Fact]) -> dict[str, list[Fact]]:

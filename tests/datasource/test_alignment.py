@@ -104,6 +104,39 @@ def test_annual_excluded():
     assert len(qs) == 0
 
 
+# --- Defect 1: 3-level chain, prefix must include earlier cumulatives ---
+
+def test_three_level_chain_uses_cumulative_prefix():
+    """Q1 + H1 + 9M: Q3 must be 9M - H1 (=170), not 9M - Q1 (=300)."""
+    q1 = fact("100", "2024-01-01", "2024-03-31", "2024-04-01", "CY2024Q1", fp="Q1", fy=2024)
+    h1 = fact("230", "2024-01-01", "2024-06-30", "2024-07-01", "CY2024H1", fp="Q2", fy=2024)
+    nine_m = fact("400", "2024-01-01", "2024-09-30", "2024-11-01", "CY2024Q3", fp="Q3", fy=2024)
+    qs = single_quarters([q1, h1, nine_m])
+    by_end = {f.period_end: f for f in qs}
+    assert by_end[date(2024, 3, 31)].value == Decimal("100")   # native Q1
+    assert by_end[date(2024, 6, 30)].value == Decimal("130")   # derived Q2 = H1 - Q1
+    assert by_end[date(2024, 9, 30)].value == Decimal("170")   # derived Q3 = 9M - H1, NOT 9M - Q1
+    assert len(qs) == 3
+
+
+# --- Defect 2: native quarter wins over derived at same period_end ---
+
+def test_native_quarter_wins_over_derived():
+    """Native Q2 (Apr1-Jun30) + H1 cumulative -> one fact at Jun30, the native one."""
+    q1 = fact("100", "2024-01-01", "2024-03-31", "2024-04-01", "CY2024Q1", fp="Q1", fy=2024)
+    q2_native = fact("120", "2024-04-01", "2024-06-30", "2024-07-01", "CY2024Q2", fp="Q2", fy=2024)
+    h1 = fact("230", "2024-01-01", "2024-06-30", "2024-07-01", "CY2024H1", fp="Q2", fy=2024)
+    qs = single_quarters([q1, q2_native, h1])
+    # Exactly one fact at Jun30, and it's the native reported value
+    jun30_facts = [f for f in qs if f.period_end == date(2024, 6, 30)]
+    assert len(jun30_facts) == 1
+    assert jun30_facts[0].value == Decimal("120")
+    # H1 cumulative value 230 must not appear anywhere
+    all_values = [f.value for f in qs]
+    assert Decimal("230") not in all_values
+    assert len(qs) == 2  # native Q1 + native Q2
+
+
 # --- align_frame ---
 
 def test_align_frame():
