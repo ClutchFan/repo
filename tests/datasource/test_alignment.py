@@ -4,6 +4,7 @@ from finagent.models import Fact, Provenance, make_fact_id
 from finagent.datasource.facts import (
     latest_per_period,
     single_quarters,
+    quarter_facts,
     duration_days,
     align_frame,
     calendar_frame,
@@ -36,7 +37,21 @@ def test_latest_wins():
     old = fact("100", "2024-01-01", "2024-03-31", "2024-04-01")
     new = fact("110", "2024-01-01", "2024-03-31", "2024-06-01")
     m = latest_per_period([old, new])
-    assert m[("us-gaap:Revenues", date(2024, 3, 31))].value == Decimal("110")
+    key = ("us-gaap:Revenues", date(2024, 1, 1), date(2024, 3, 31))
+    assert m[key].value == Decimal("110")
+
+
+def test_different_starts_same_end_both_retained():
+    """Native Q2 (Apr1-Jun30) and H1 cumulative (Jan1-Jun30) share end date
+    but have different starts -- both are different facts and must both survive
+    the dedup so single_quarters can derive from the cumulative."""
+    q2_native = fact("120", "2024-04-01", "2024-06-30", "2024-07-01", fp="Q2", fy=2024)
+    h1 = fact("230", "2024-01-01", "2024-06-30", "2024-07-01", fp="Q2", fy=2024)
+    m = latest_per_period([q2_native, h1])
+    # Both should be present -- different start dates = different facts
+    assert len(m) == 2
+    assert ("us-gaap:Revenues", date(2024, 4, 1), date(2024, 6, 30)) in m
+    assert ("us-gaap:Revenues", date(2024, 1, 1), date(2024, 6, 30)) in m
 
 
 # --- duration_days ---
@@ -153,3 +168,30 @@ def test_align_frame_skips_none():
     f = fact("100", "2024-01-01", "2024-03-31", "2024-04-01", frame=None)
     result = align_frame([f])
     assert len(result) == 0
+
+
+# --- quarter_facts pipeline ---
+
+def test_quarter_facts_pipeline():
+    """quarter_facts = single_quarters after latest_per_period dedup.
+
+    Feeds in raw-style facts with a duplicate revision and a cumulative.
+    Verifies: revision value wins dedup, cumulative is excluded from output,
+    derived quarter is produced from cumulative.
+    """
+    # Q1: two revisions (old=100, new=105) -- new should win
+    q1_old = fact("100", "2024-01-01", "2024-03-31", "2024-04-01", "CY2024Q1", fp="Q1", fy=2024)
+    q1_new = fact("105", "2024-01-01", "2024-03-31", "2024-05-01", "CY2024Q1", fp="Q1", fy=2024)
+    # H1 cumulative -- should be used for derivation but excluded from output
+    h1 = fact("235", "2024-01-01", "2024-06-30", "2024-07-01", "CY2024H1", fp="Q2", fy=2024)
+
+    qs = quarter_facts([q1_old, q1_new, h1])
+    by_end = {f.period_end: f for f in qs}
+    # Revision dedup: Q1 should be 105 (later filing), not 100
+    assert by_end[date(2024, 3, 31)].value == Decimal("105")
+    # Derived Q2 = H1 - Q1 = 235 - 105 = 130
+    assert by_end[date(2024, 6, 30)].value == Decimal("130")
+    # H1 cumulative value 235 must not appear (excluded from output)
+    all_values = [f.value for f in qs]
+    assert Decimal("235") not in all_values
+    assert len(qs) == 2

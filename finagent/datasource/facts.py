@@ -60,15 +60,29 @@ def duration_days(f: Fact) -> int:
     return (f.period_end - f.period_start).days
 
 
-def latest_per_period(facts: list[Fact]) -> dict[tuple[str, date], Fact]:
-    """Dedupe by (concept, period_end), keeping the fact with greatest filed_date."""
+def latest_per_period(facts: list[Fact]) -> dict[tuple[str, date, date], Fact]:
+    """Dedupe by (concept, period_start, period_end), keeping the fact with greatest filed_date.
+
+    True revisions/amendments (identical start AND end) collapse to the latest filing.
+    Facts with the same end but different starts (e.g. a native Q2 and an H1 cumulative)
+    are distinct and both survive, so single_quarters can derive from the cumulative.
+    """
     out = {}
     for f in facts:
-        key = (f.concept, f.period_end)
+        key = (f.concept, f.period_start, f.period_end)
         cur = out.get(key)
         if cur is None or f.provenance.filed_date > cur.provenance.filed_date:
             out[key] = f
     return out
+
+
+def quarter_facts(facts: list[Fact]) -> list[Fact]:
+    """Pipeline: dedup revisions, then derive/select single-quarter facts.
+
+    Downstream code should call this rather than single_quarters directly when
+    working with raw SEC facts that may contain multiple revisions of the same period.
+    """
+    return single_quarters(list(latest_per_period(facts).values()))
 
 
 def single_quarters(facts: list[Fact]) -> list[Fact]:
