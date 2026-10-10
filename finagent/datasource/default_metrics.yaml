@@ -1,0 +1,4 @@
+revenue: [RevenueFromContractWithCustomerExcludingAssessedTax, Revenues]
+gross_profit: [GrossProfit]
+net_income: [NetIncomeLoss]
+operating_income: [OperatingIncomeLoss]
