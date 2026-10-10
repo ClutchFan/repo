@@ -1,0 +1,11 @@
+[project]
+name = "finagent"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["httpx", "openai>=1.0", "rich", "openpyxl", "pyyaml"]
+[project.optional-dependencies]
+dev = ["pytest", "pytest-httpx"]
+[project.scripts]
+finagent = "finagent.app:main"
+[tool.pytest.ini_options]
+testpaths = ["tests"]
