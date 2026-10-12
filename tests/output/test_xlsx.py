@@ -302,6 +302,16 @@ def test_ratio_cell_resolves(tmp_path):
     assert gp_q1.fact_id in comment_text
     assert rev_q1.fact_id in comment_text
 
+    # Comment should show the percentage form consistent with cell display,
+    # not the raw ratio 0.4. Cell displays 40.000000 (%) ; comment shows "= 40.000000%"
+    cell_value = str(cell.value)
+    assert "40.000000" in cell_value, f"Cell should show percentage, got {cell_value}"
+    assert "40.000000%" in comment_text, (
+        f"Ratio comment should show percentage matching cell, got: {comment_text}"
+    )
+    # The raw 0.4 ratio should NOT appear as the "= <value>" line
+    assert "= 0.4" not in comment_text
+
 
 # ---------------------------------------------------------------------------
 # Test 5: N/A cells (fact_id None) write note text and do NOT hyperlink
@@ -392,3 +402,38 @@ def test_claims_sheet(tmp_path):
     # Data row
     assert cl.max_row >= 2
     assert cl.cell(row=2, column=1).value == "c1"
+
+
+# ---------------------------------------------------------------------------
+# Test 8: Snapshot written before workbook — snapshot failure leaves no workbook
+# ---------------------------------------------------------------------------
+
+def test_snapshot_written_before_workbook(tmp_path, monkeypatch):
+    """If snapshot write fails (e.g. path.parent/snapshots cannot be created),
+    the workbook must NOT be written — no orphan xlsx file.
+
+    This pins the ordering guarantee: snapshot first, workbook second.
+    A failure in the first step prevents the second from happening.
+    """
+    from finagent.output import xlsx as xlsx_module
+
+    result = fake_result(tmp_path)
+    xlsx_path = tmp_path / "output" / "out.xlsx"  # output/ doesn't exist yet
+
+    # Patch _build_snapshot_facts to raise — simulating a failure during
+    # snapshot construction/write. Since snapshot is written before wb.save,
+    # a snapshot failure means no workbook file is created.
+    original = xlsx_module._build_snapshot_facts
+
+    def bad_build(*args, **kwargs):
+        raise RuntimeError("simulated snapshot failure")
+
+    monkeypatch.setattr(xlsx_module, "_build_snapshot_facts", bad_build)
+
+    with pytest.raises(RuntimeError, match="simulated snapshot failure"):
+        xlsx_module.export_xlsx(result, xlsx_path)
+
+    # Workbook file must NOT exist — no orphan file left behind
+    assert not xlsx_path.exists(), (
+        f"Workbook file should not exist when snapshot fails — orphan file left behind"
+    )

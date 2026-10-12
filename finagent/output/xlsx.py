@@ -10,6 +10,7 @@ Also writes a JSON snapshot of all facts alongside the workbook.
 import json
 import pathlib
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from openpyxl import Workbook
 from openpyxl.comments import Comment
@@ -91,11 +92,12 @@ def _fact_comment_text(entry):
         gp = entry["numerator"]
         rv = entry["denominator"]
         d = entry["derived"]
+        pct = (d.value * 100).quantize(Decimal("0.000001"))
         return (
             f"derived:gross_profit/revenue\n"
             f"numerator: {gp.fact_id} = {gp.value} {gp.unit}\n"
             f"denominator: {rv.fact_id} = {rv.value} {rv.unit}\n"
-            f"= {d.value}\n"
+            f"= {pct}%\n"
             f"source: {gp.provenance.accession}\n"
             f"filed {gp.provenance.filed_date}"
         )
@@ -180,6 +182,20 @@ def export_xlsx(result, path):
     # Build the comprehensive fact index (raw + ytd_diff + ratio)
     fact_index = _build_fact_index(result)
 
+    # Compute snapshot facts once — used by both Provenance sheet and JSON snapshot
+    snapshot_facts = _build_snapshot_facts(fact_index)
+
+    # --- Snapshot JSON (written first so a save failure leaves no orphan workbook) ---
+    snap_dir = path.parent / "snapshots"
+    snap_dir.mkdir(parents=True, exist_ok=True)
+    snap_path = snap_dir / (path.stem + ".json")
+
+    snapshot = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "facts": snapshot_facts,
+    }
+    snap_path.write_text(json.dumps(snapshot, indent=2, ensure_ascii=False))
+
     # --- Workbook ---
     wb = Workbook()
 
@@ -206,14 +222,14 @@ def export_xlsx(result, path):
                 if comment_text:
                     cmp.cell(r, i).comment = Comment(comment_text, "finagent")
 
-    # --- Provenance sheet ---
+    # --- Provenance sheet (reuses snapshot facts — computed once) ---
     prov = wb.create_sheet("Provenance")
     prov.append([
         "fact_id", "ticker", "company", "concept", "period_start", "period_end",
         "frame", "raw_value", "value", "unit", "form", "accession",
         "filed_date", "source_url", "type",
     ])
-    for entry in _build_snapshot_facts(fact_index):
+    for entry in snapshot_facts:
         prov.append([
             entry["fact_id"],
             entry["ticker"],
@@ -247,19 +263,8 @@ def export_xlsx(result, path):
             v.reason if v else "",
         ])
 
-    # Save workbook
+    # Save workbook (after snapshot — a save failure leaves only the harmless snapshot)
     path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(path)
-
-    # --- Snapshot JSON ---
-    snap_dir = path.parent / "snapshots"
-    snap_dir.mkdir(parents=True, exist_ok=True)
-    snap_path = snap_dir / (path.stem + ".json")
-
-    snapshot = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "facts": _build_snapshot_facts(fact_index),
-    }
-    snap_path.write_text(json.dumps(snapshot, indent=2, ensure_ascii=False))
 
     return path
