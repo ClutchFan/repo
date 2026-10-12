@@ -1,3 +1,4 @@
+import httpx
 from finagent.agent.tools import DataTools
 from finagent.datasource.tickers import TickerResolver
 
@@ -33,6 +34,14 @@ class FakeSEC:
                 }
             },
         }
+
+
+class FakeSECWithHTTPError:
+    def get_ticker_index(self):
+        return [{"ticker": "AAPL", "cik": 320193, "title": "Apple Inc."}]
+
+    def get_company_facts(self, cik):
+        raise httpx.RequestError("boom", request=httpx.Request("GET", f"https://example.com/{cik}"))
 
 
 def test_resolve_and_concepts():
@@ -71,3 +80,27 @@ def test_preview_metric_not_reported():
     r = dt.call("preview_metric", {"cik": 320193, "concept": "us-gaap:Nope"})
     assert r["ok"] is False
     assert r["reason"] == "not reported"
+
+
+def test_http_error_returns_upstream_error():
+    dt = DataTools(FakeSECWithHTTPError(), TickerResolver(FakeSEC()))
+    r = dt.call("list_concepts", {"cik": 320193, "query": ""})
+    assert r["ok"] is False
+    assert "upstream:" in r["error"]
+    assert "boom" in r["error"]
+
+
+def test_data_processing_error_returns_error():
+    # Test that data processing errors are caught and return structured error
+    class FaultySEC:
+        def get_ticker_index(self):
+            return [{"ticker": "AAPL", "cik": 320193, "title": "Apple Inc."}]
+
+        def get_company_facts(self, cik):
+            # Return facts that will cause KeyError when accessed
+            return "not a dict"  # This will cause int conversion to fail
+
+    dt = DataTools(FaultySEC(), TickerResolver(FakeSEC()))
+    r = dt.call("list_concepts", {"cik": 320193, "query": ""})
+    assert r["ok"] is False
+    # Should contain error message about type conversion

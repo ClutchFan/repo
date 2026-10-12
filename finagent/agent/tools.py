@@ -1,3 +1,4 @@
+import httpx
 from dataclasses import asdict
 from finagent.datasource.tickers import AmbiguousTicker
 from finagent.datasource.facts import (
@@ -56,5 +57,7 @@ class DataTools:
             return {"ok": False, "error": f"unknown tool {name}"}
         try:
             return fn(**args)
-        except TypeError as e:
+        except httpx.HTTPError as e:
+            return {"ok": False, "error": f"upstream: {str(e)}"}
+        except (TypeError, ValueError, KeyError) as e:
             return {"ok": False, "error": str(e)}
