@@ -153,12 +153,12 @@ def test_judge_contradicted():
     assert "judge:contradicted" in results[0].reason
 
 
-def test_scope_ticker_not_allowed():
-    # Claim mentions a ticker not in allowed set -> reject
+def test_scope_only_forbidden_members_trigger_company_gate():
+    # TSLA is not in forbidden_companies -> company gate passes (no false positive)
     c = Claim("c", "TSLA grew 5.4%.", ("f1",), "datapoint")
     results = verify_claims([c], **ARGS)
-    assert results[0].ok is False
-    assert "scope" in results[0].reason
+    # Not rejected by company gate; judge says supported, so ok
+    assert results[0].ok is True
 
 
 def test_verdict_frozen():
@@ -206,3 +206,117 @@ def test_number_normalization_commas():
     )
     results = verify_claims([c], **local_args)
     assert results[0].ok is True, f"comma-formatted number should match: {results[0].reason}"
+
+
+# ---- FIX 1: Sound numeric equality ----
+
+def test_numeric_equality_leading_dot_decimal():
+    """Evidence '0.5%' should match '.5%' via Decimal equality, not string norm."""
+    local_idx = {"f1": type("E", (), {"display": "0.5%", "company": "AAPL", "frame": "CY2024Q1"})()}
+    local_args = dict(
+        index=local_idx, judge=judge_supported,
+        allowed_companies={"AAPL"}, forbidden_companies=set(),
+        allowed_frames={"CY2024Q1"},
+    )
+    c = Claim("c", "AAPL grew .5%.", ("f1",), "datapoint")
+    results = verify_claims([c], **local_args)
+    assert results[0].ok is True, f"leading-dot decimal should match: {results[0].reason}"
+
+
+def test_numeric_equality_dot_five_not_five():
+    """.5 must NOT match integer evidence '5' via Decimal equality."""
+    local_idx = {"f1": type("E", (), {"display": "5", "company": "AAPL", "frame": "CY2024Q1"})()}
+    local_args = dict(
+        index=local_idx, judge=judge_supported,
+        allowed_companies={"AAPL"}, forbidden_companies=set(),
+        allowed_frames={"CY2024Q1"},
+    )
+    c = Claim("c", "AAPL had .5 widgets.", ("f1",), "datapoint")
+    results = verify_claims([c], **local_args)
+    assert results[0].ok is False, ".5 should not match evidence 5"
+    assert ".5" in results[0].reason
+
+
+def test_numeric_equality_trailing_zeros():
+    """Evidence '5.4%' should accept '5.40%' (same numeric value)."""
+    local_idx = {"f1": type("E", (), {"display": "5.4%", "company": "AAPL", "frame": "CY2024Q1"})()}
+    local_args = dict(
+        index=local_idx, judge=judge_supported,
+        allowed_companies={"AAPL"}, forbidden_companies=set(),
+        allowed_frames={"CY2024Q1"},
+    )
+    c = Claim("c", "AAPL revenue grew 5.40%.", ("f1",), "datapoint")
+    results = verify_claims([c], **local_args)
+    assert results[0].ok is True, f"trailing-zeros should match: {results[0].reason}"
+
+
+def test_numeric_equality_integer_form():
+    """Evidence '119580.00' should accept '119580' (integer form, same value)."""
+    f = _make_fact("f_rev", "AAPL", 119580000000, "USD", "Revenue", "CY2024Q1")
+    bundle, index = build_evidence_bundle([f], [])
+    c = Claim("c", "AAPL revenue was 119580.", ("f_rev",), "datapoint")
+    local_args = dict(
+        index=index, judge=judge_supported,
+        allowed_companies={"AAPL"}, forbidden_companies=set(),
+        allowed_frames={"CY2024Q1"},
+    )
+    results = verify_claims([c], **local_args)
+    assert results[0].ok is True, f"integer form should match decimal display: {results[0].reason}"
+
+
+def test_numeric_equality_percent_flag_must_match():
+    """A plain number must NOT match a percent evidence (different flags)."""
+    local_idx = {"f1": type("E", (), {"display": "5.4%", "company": "AAPL", "frame": "CY2024Q1"})()}
+    local_args = dict(
+        index=local_idx, judge=judge_supported,
+        allowed_companies={"AAPL"}, forbidden_companies=set(),
+        allowed_frames={"CY2024Q1"},
+    )
+    c = Claim("c", "AAPL had 5.4 widgets.", ("f1",), "datapoint")
+    results = verify_claims([c], **local_args)
+    assert results[0].ok is False, "plain 5.4 must not match 5.4%"
+    assert "5.4" in results[0].reason
+
+
+# ---- FIX 2: Company scope only rejects exact forbidden members ----
+
+def test_company_gate_passes_ordinary_acronyms():
+    """Ordinary financial acronyms (EPS, GAAP, USD, CEO) must not trigger company gate.
+    'AAPL EPS and GAAP revenue grew 5.4%' with allowed {AAPL} must pass."""
+    c = Claim("c", "AAPL EPS and GAAP revenue grew 5.4%.", ("f1",), "datapoint")
+    results = verify_claims([c], **ARGS)
+    assert results[0].ok is True, f"acronyms should not trigger company gate: {results[0].reason}"
+
+
+def test_company_gate_rejects_forbidden_member_msft():
+    """MSFT in forbidden set -> rejected by company gate."""
+    c = Claim("c", "MSFT revenue grew 5.4%.", ("f1",), "datapoint")
+    results = verify_claims([c], **ARGS)
+    assert results[0].ok is False
+    assert "company" in results[0].reason
+
+
+# ---- FIX 3: Frame scope enforcement ----
+
+def test_frame_gate_in_scope_passes():
+    """CY2024Q1 is in allowed_frames -> passes frame gate."""
+    c = Claim("c", "AAPL revenue in CY2024Q1 grew 5.4%.", ("f1",), "datapoint")
+    results = verify_claims([c], **ARGS)
+    assert results[0].ok is True, f"in-scope frame should pass: {results[0].reason}"
+
+
+def test_frame_gate_out_of_scope_rejected():
+    """CY2019Q1 not in allowed_frames {CY2024Q1} -> rejected by frame gate."""
+    c = Claim("c", "AAPL revenue in CY2019Q1 grew 5.4%.", ("f1",), "datapoint")
+    results = verify_claims([c], **ARGS)
+    assert results[0].ok is False
+    assert "frame" in results[0].reason
+
+
+def test_frame_gate_empty_allowed_skips_check():
+    """If allowed_frames is empty set, frame check is skipped."""
+    local_args = dict(ARGS)
+    local_args["allowed_frames"] = set()
+    c = Claim("c", "AAPL revenue in CY2019Q1 grew 5.4%.", ("f1",), "datapoint")
+    results = verify_claims([c], **local_args)
+    assert results[0].ok is True, "empty allowed_frames should skip frame check"

@@ -1,8 +1,11 @@
 import re
+from decimal import Decimal, InvalidOperation
 from dataclasses import dataclass
 
-NUM = re.compile(r"-?\d[\d,]*(?:\.\d+)?%?")
-TICKER = re.compile(r"\b[A-Z]{2,5}\b")
+# Number token regex: supports leading-dot decimals like .5, .5%, and normal numbers
+NUM = re.compile(r"-?(?:\d[\d,]*(?:\.\d+)?|\.\d+)%?")
+# Frame token regex: CY followed by 4 digits, Q, and 1-4
+FRAME = re.compile(r"CY\d{4}Q[1-4]")
 INTERP_MARKER = "【模型解读，非数据】"
 
 
@@ -13,15 +16,43 @@ class Verdict:
     reason: str
 
 
-def _norm(t):
-    """Normalize a number token: strip commas, remove leading zeros.
+def _parse_number(token):
+    """Parse a number token into (Decimal, is_percent).
 
-    Percent-suffixed tokens keep their '%' so that "5.4%" matches "5.4%" exactly.
+    Strips thousands commas, detects trailing % flag, parses numeric part with Decimal.
+    Returns None if the token cannot be parsed as a valid number.
     """
-    is_pct = t.endswith("%")
-    core = t[:-1] if is_pct else t
-    core = core.replace(",", "").lstrip("0") or "0"
-    return core + ("%" if is_pct else "")
+    is_pct = token.endswith("%")
+    core = token[:-1] if is_pct else token
+    core = core.replace(",", "")
+    try:
+        val = Decimal(core)
+    except InvalidOperation:
+        return None
+    return val, is_pct
+
+
+def _allowed_numbers(evidence_displays):
+    """Build a set of (Decimal, is_percent) tuples from evidence display strings.
+
+    Only display strings that parse as valid numbers are included.
+    """
+    result = set()
+    for d in evidence_displays:
+        parsed = _parse_number(d)
+        if parsed is not None:
+            result.add(parsed)
+    return result
+
+
+def _find_number_tokens(text):
+    """Extract number tokens from text, excluding those inside frame tokens (CY2024Q1).
+
+    We first remove all frame tokens from the text, then find number tokens in the remainder.
+    This prevents digits inside CY2024Q1 from being treated as standalone numeric claims.
+    """
+    cleaned = FRAME.sub(" ", text)
+    return NUM.findall(cleaned)
 
 
 def render_claim_text(c):
@@ -32,17 +63,16 @@ def render_claim_text(c):
 
 
 def verify_claims(claims, index, judge, allowed_companies, forbidden_companies, allowed_frames):
-    """Verify a list of Claims against three gates:
+    """Verify a list of Claims against gates in order:
 
-    Gate order:
-      1. interpretation claims -> auto-ok
-      2. datapoint without evidence -> reject
-      3. missing evidence id -> reject
-      4. bare-number gate: every number token must match (normalized) one of the
-         bound evidence display strings
-      5. scope gate: any forbidden company token, or a ticker present but none
-         in allowed set -> reject
-      6. judge(c) must return "supported"
+    1. interpretation claims -> auto-ok
+    2. datapoint without evidence -> reject
+    3. missing evidence id -> reject
+    4. number gate: every number token must match (Decimal equality, same % flag)
+       one of the bound evidence display strings
+    5. company gate: any forbidden company token (exact member match) -> reject
+    6. frame gate: if allowed_frames non-empty, any frame token not in set -> reject
+    7. judge(c) must return "supported"
 
     Returns a list of Verdict objects in the same order as the input claims.
     """
@@ -58,8 +88,8 @@ def verify_claims(claims, index, judge, allowed_companies, forbidden_companies, 
             out.append(Verdict(c.id, False, "datapoint without evidence"))
             continue
 
-        # Gate 3: missing evidence ids (and collect allowed display strings)
-        allowed = set()
+        # Gate 3: missing evidence ids (and collect allowed display values)
+        allowed_values = set()
         missing = False
         for eid in c.evidence_ids:
             e = index.get(eid)
@@ -67,23 +97,44 @@ def verify_claims(claims, index, judge, allowed_companies, forbidden_companies, 
                 out.append(Verdict(c.id, False, f"missing evidence {eid}"))
                 missing = True
                 break
-            allowed.add(_norm(e.display))
+            parsed = _parse_number(e.display)
+            if parsed is not None:
+                allowed_values.add(parsed)
         if missing:
             continue
 
-        # Gate 4: bare-number gate
-        bad = [n for n in NUM.findall(c.text) if _norm(n) not in allowed]
+        # Gate 4: number gate (sound Decimal equality)
+        bad = []
+        for token in _find_number_tokens(c.text):
+            parsed = _parse_number(token)
+            if parsed is None:
+                bad.append(token)
+                continue
+            if parsed not in allowed_values:
+                bad.append(token)
         if bad:
             out.append(Verdict(c.id, False, f"unsupported numbers {bad}"))
             continue
 
-        # Gate 5: scope gate (company tickers)
-        tokens = set(TICKER.findall(c.text))
-        if tokens & forbidden_companies or (tokens and not (tokens & allowed_companies)):
+        # Gate 5: company gate (exact forbidden-members only)
+        has_forbidden = False
+        for tk in forbidden_companies:
+            if re.search(r"\b" + re.escape(tk) + r"\b", c.text):
+                has_forbidden = True
+                break
+        if has_forbidden:
             out.append(Verdict(c.id, False, "out-of-scope company"))
             continue
 
-        # Gate 6: judge
+        # Gate 6: frame gate
+        if allowed_frames:
+            frame_tokens = FRAME.findall(c.text)
+            bad_frames = [f for f in frame_tokens if f not in allowed_frames]
+            if bad_frames:
+                out.append(Verdict(c.id, False, f"out-of-scope frame {bad_frames}"))
+                continue
+
+        # Gate 7: judge
         verdict = judge(c)
         if verdict != "supported":
             out.append(Verdict(c.id, False, f"judge:{verdict}"))
