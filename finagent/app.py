@@ -13,6 +13,7 @@ import json
 import os
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 
 from finagent.agent.tools import DataTools
 from finagent.agent.loop import AgentLoop
@@ -195,9 +196,11 @@ def main():
     )
     parser.add_argument(
         "--xlsx",
+        nargs="?",
+        const="auto",
         default=None,
         metavar="PATH",
-        help="Export result to XLSX at PATH (delegates to finagent.output.xlsx)",
+        help="Export result to XLSX. Without PATH: output/finagent-YYYYMMDD-HHMMSS.xlsx",
     )
     parser.add_argument("--verbose", action="store_true", help="Verbose output")
     args = parser.parse_args()
@@ -258,9 +261,17 @@ def main():
                 file=sys.stderr,
             )
             sys.exit(1)
-        export_xlsx(result, args.xlsx)
+        if args.xlsx == "auto":
+            import pathlib
+            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+            out_dir = pathlib.Path("output")
+            out_dir.mkdir(parents=True, exist_ok=True)
+            xlsx_path = out_dir / f"finagent-{ts}.xlsx"
+        else:
+            xlsx_path = args.xlsx
+        export_xlsx(result, xlsx_path)
         if args.verbose:
-            print(f"XLSX exported to {args.xlsx}")
+            print(f"XLSX exported to {xlsx_path}")
 
 
 if __name__ == "__main__":
