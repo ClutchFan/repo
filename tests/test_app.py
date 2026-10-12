@@ -156,19 +156,6 @@ def _bad_claims_payload(fact_id):
     }
 
 
-def _find_revenue_fact_id(index):
-    """Find the fact_id for the revenue fact from the evidence index."""
-    for fid, entry in index.items():
-        if "Revenues" in getattr(entry, "label", "") or (
-            hasattr(entry, "company") and hasattr(entry, "frame") and "Revenues" not in str(entry)
-        ):
-            pass
-    # simpler: just return the only (or first) fact id
-    for fid in index:
-        return fid
-    return None
-
-
 # ---------------------------------------------------------------------------
 # Test 1: Happy path — one datapoint claim passes, verdict ok, downgraded 0
 # ---------------------------------------------------------------------------
@@ -297,8 +284,14 @@ def test_run_query_rewrite_path(tmp_path):
     assert result.downgraded == 0
     assert len(result.claims) == 2
     assert all(v.ok for v in result.verdicts)
-    # The bad first attempt should have caused a rewrite (more than 0 summarizer calls)
-    # We can verify by checking that more LLM calls happened than just planner + 1 summarizer
+    # The bad first attempt caused a rewrite — SUMMARIZER was called exactly twice
+    # (not just once as in the happy path). Verify by counting calls that used
+    # SUMMARIZER_SYSTEM, distinct from planner calls.
+    from finagent.narrative.summarizer import SUMMARIZER_SYSTEM
+    summarizer_calls = [c for c in llm.calls if c[0] == SUMMARIZER_SYSTEM]
+    assert len(summarizer_calls) == 2, (
+        f"Expected 2 summarizer calls (1 fail + 1 fix), got {len(summarizer_calls)}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -370,6 +363,90 @@ def test_run_query_downgrade_path(tmp_path):
     assert result.claims[0].claim_type == "interpretation"
     assert result.claims[0].id == "c2"
     # downgraded = number of failed (dropped) claim ids
+    assert result.downgraded == 1
+
+
+# ---------------------------------------------------------------------------
+# Test 3b: Downgraded counts only actually-removed claims, not retained interpretations
+# ---------------------------------------------------------------------------
+
+def test_downgraded_excludes_retained_interpretations(tmp_path, monkeypatch):
+    """If an interpretation claim somehow appears in the failed-verdict set
+    (impossible today since verifier auto-oks them), it must still be retained
+    and must NOT count toward downgraded. downgraded = only claims actually dropped."""
+    from finagent import app as app_module
+    from finagent.narrative.verifier import Verdict
+
+    sec = FakeSEC()
+    resolver = TickerResolver(sec)
+    tools = DataTools(sec, resolver)
+
+    raw_facts = tools._facts_for(320193)
+    from finagent.datasource.facts import quarter_facts
+    qf = quarter_facts(raw_facts)
+    rev_fact = [f for f in qf if "Revenues" in f.concept][0]
+    rev_fact_id = rev_fact.fact_id
+
+    # Build a claims payload with both a bad datapoint and an interpretation
+    two_claims = {
+        "claims": [
+            {
+                "id": "c1",
+                "text": "AAPL revenue was 999999 million USD.",
+                "evidence_ids": [rev_fact_id],
+                "claim_type": "datapoint",
+            },
+            {
+                "id": "c2",
+                "text": "Solid quarter.",
+                "evidence_ids": [],
+                "claim_type": "interpretation",
+            },
+        ]
+    }
+
+    llm = ScriptedLLM([
+        {"tool": "resolve_ticker", "args": {"ticker": "AAPL"}},
+        AAPL_PLAN,
+        two_claims,  # attempt 0
+        two_claims,  # attempt 1
+        two_claims,  # attempt 2
+    ])
+
+    profile_path = tmp_path / "profile.json"
+    profile = Profile(
+        watchlist=[Company("AAPL", 320193, "Apple Inc.")],
+        metric_aliases={},
+        default_quarters=4,
+    )
+    ProfileStore(profile_path).save(profile)
+    profile_obj = ProfileStore(profile_path).load()
+
+    # Patch verify_claims to mark BOTH claims as failed (simulating the edge case
+    # where an interpretation somehow fails verification).
+    def fake_verify(claims, index, judge, **kwargs):
+        return [
+            Verdict("c1", False, "bad number"),
+            Verdict("c2", False, "interpretation somehow failed"),
+        ]
+
+    monkeypatch.setattr(app_module, "verify_claims", fake_verify)
+
+    result = run_query(
+        question="What was AAPL revenue?",
+        llm=llm,
+        sec=sec,
+        resolver=resolver,
+        profile=profile_obj,
+        judge=lambda c: "supported",
+        max_rewrites=2,
+    )
+
+    # Interpretation is retained even though its verdict is not ok
+    assert len(result.claims) == 1
+    assert result.claims[0].id == "c2"
+    assert result.claims[0].claim_type == "interpretation"
+    # downgraded counts only the dropped datapoint (1), NOT the retained interpretation
     assert result.downgraded == 1
 
 

@@ -126,11 +126,11 @@ def run_query(question, llm, sec, resolver, profile, judge=None, max_rewrites=2)
     # --- Phase 5: Drop failed datapoint claims, keep interpretations ---
     bad_ids = {v.claim_id for v in verdicts if not v.ok}
     if bad_ids:
-        claims = [
-            c for c in claims
-            if c.id not in bad_ids or c.claim_type == "interpretation"
-        ]
-        downgraded = len(bad_ids)
+        # Drop only failed claims that are NOT interpretations.
+        # Interpretations are always retained even if somehow in bad_ids.
+        dropped = {c.id for c in claims if c.id in bad_ids and c.claim_type != "interpretation"}
+        claims = [c for c in claims if c.id not in dropped]
+        downgraded = len(dropped)
 
     return Result(plan, table, claims, verdicts, facts_by_company, index, downgraded)
 
