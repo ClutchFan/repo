@@ -1,0 +1,223 @@
+# Golden evaluation set — 15 cases across 5 categories
+#
+# IMPORTANT: All numeric expected values are fixture-contract values defined in
+# finagent/eval/fixtures.py. They are used for offline scoring only. Before any
+# published eval run, values must be re-verified against live SEC EDGAR data.
+#
+# Categories: 3 single · 3 trend · 4 multi-company · 3 narrative · 2 adversarial = 15
+#
+# expected_behavior: answer | produce_table | ask | degrade
+# expected_cells: "TICKER|alias|CY####Q#" -> displayed string (millions, 2dp)
+
+- id: single_01
+  category: single
+  question: "What was AAPL revenue for calendar 2024Q1 in USD millions?"
+  expected_behavior: answer
+  expected_cells:
+    "AAPL|revenue|CY2024Q1": "119580.00"
+  expected_plan:
+    - AAPL
+    - revenue
+
+- id: single_02
+  category: single
+  question: "Show me Microsoft net income for CY2024Q2."
+  expected_behavior: answer
+  expected_cells:
+    "MSFT|net_income|CY2024Q2": "22586.00"
+  expected_plan:
+    - MSFT
+    - net_income
+
+- id: single_03
+  category: single
+  question: "What was NVDA gross profit in calendar Q3 2024?"
+  expected_behavior: answer
+  expected_cells:
+    "NVDA|gross_profit|CY2024Q3": "25122.00"
+  expected_plan:
+    - NVDA
+    - gross_profit
+
+# --- Trend (single company, multi-quarter) ---
+
+- id: trend_01
+  category: trend
+  question: "Show AAPL revenue for the last 4 quarters of 2024."
+  expected_behavior: produce_table
+  expected_cells:
+    "AAPL|revenue|CY2024Q1": "119580.00"
+    "AAPL|revenue|CY2024Q2": "95076.00"
+    "AAPL|revenue|CY2024Q3": "90146.00"
+    "AAPL|revenue|CY2024Q4": "124292.00"
+  expected_plan:
+    - AAPL
+    - revenue
+    - 4 quarters
+
+- id: trend_02
+  category: trend
+  question: "NVDA net income trend, last 4 quarters."
+  expected_behavior: produce_table
+  expected_cells:
+    "NVDA|net_income|CY2024Q1": "14879.00"
+    "NVDA|net_income|CY2024Q2": "17299.00"
+    "NVDA|net_income|CY2024Q3": "20127.00"
+    "NVDA|net_income|CY2024Q4": "23668.00"
+  expected_plan:
+    - NVDA
+    - net_income
+    - 4 quarters
+
+- id: trend_03
+  category: trend
+  question: "MSFT gross profit — last 4 quarters comparison."
+  expected_behavior: produce_table
+  expected_cells:
+    "MSFT|gross_profit|CY2024Q1": "42752.00"
+    "MSFT|gross_profit|CY2024Q2": "44333.00"
+    "MSFT|gross_profit|CY2024Q3": "46099.00"
+    "MSFT|gross_profit|CY2024Q4": "49213.00"
+  expected_plan:
+    - MSFT
+    - gross_profit
+    - 4 quarters
+
+# --- Multi-company cross-quarter table (4 cases) ---
+
+- id: multi_01
+  category: multi_company
+  question: "Compare revenue for AAPL, MSFT, and GOOG across the last 4 quarters."
+  expected_behavior: produce_table
+  expected_cells:
+    "AAPL|revenue|CY2024Q1": "119580.00"
+    "AAPL|revenue|CY2024Q2": "95076.00"
+    "AAPL|revenue|CY2024Q3": "90146.00"
+    "AAPL|revenue|CY2024Q4": "124292.00"
+    "MSFT|revenue|CY2024Q1": "61859.00"
+    "MSFT|revenue|CY2024Q2": "64699.00"
+    "MSFT|revenue|CY2024Q3": "66826.00"
+    "MSFT|revenue|CY2024Q4": "71197.00"
+    "GOOG|revenue|CY2024Q1": "80539.00"
+    "GOOG|revenue|CY2024Q2": "84717.00"
+    "GOOG|revenue|CY2024Q3": "89127.00"
+    "GOOG|revenue|CY2024Q4": "97225.00"
+  expected_plan:
+    - AAPL
+    - MSFT
+    - GOOG
+    - revenue
+    - 4 quarters
+
+- id: multi_02
+  category: multi_company
+  question: "Compare net income of AAPL and NVDA for the last 2 quarters of 2024."
+  expected_behavior: produce_table
+  expected_cells:
+    "AAPL|net_income|CY2024Q3": "22956.00"
+    "AAPL|net_income|CY2024Q4": "36678.00"
+    "NVDA|net_income|CY2024Q3": "20127.00"
+    "NVDA|net_income|CY2024Q4": "23668.00"
+  expected_plan:
+    - AAPL
+    - NVDA
+    - net_income
+    - 2 quarters
+
+- id: multi_03
+  category: multi_company
+  question: "Show gross profit for all four big tech companies (AAPL MSFT NVDA GOOG) in CY2024Q4."
+  expected_behavior: produce_table
+  expected_cells:
+    "AAPL|gross_profit|CY2024Q4": "55628.00"
+    "MSFT|gross_profit|CY2024Q4": "49213.00"
+    "NVDA|gross_profit|CY2024Q4": "28961.00"
+    "GOOG|gross_profit|CY2024Q4": "59887.00"
+  expected_plan:
+    - AAPL
+    - MSFT
+    - NVDA
+    - GOOG
+    - gross_profit
+    - 1 quarter
+
+- id: multi_04
+  category: multi_company
+  question: "Revenue comparison: AAPL vs MSFT, CY2023Q4 through CY2024Q3."
+  expected_behavior: produce_table
+  expected_cells:
+    "AAPL|revenue|CY2023Q4": "119575.00"
+    "AAPL|revenue|CY2024Q1": "119580.00"
+    "AAPL|revenue|CY2024Q2": "95076.00"
+    "AAPL|revenue|CY2024Q3": "90146.00"
+    "MSFT|revenue|CY2023Q4": "62020.00"
+    "MSFT|revenue|CY2024Q1": "61859.00"
+    "MSFT|revenue|CY2024Q2": "64699.00"
+    "MSFT|revenue|CY2024Q3": "66826.00"
+  expected_plan:
+    - AAPL
+    - MSFT
+    - revenue
+    - 4 quarters
+
+# --- Narrative summary (3 cases) ---
+
+- id: narrative_01
+  category: narrative
+  question: "Summarize AAPL's financial performance in CY2024Q1."
+  expected_behavior: answer
+  expected_cells:
+    "AAPL|revenue|CY2024Q1": "119580.00"
+    "AAPL|net_income|CY2024Q1": "26442.00"
+  expected_plan:
+    - AAPL
+    - revenue
+    - net_income
+    - summary
+
+- id: narrative_02
+  category: narrative
+  question: "Give me a brief analysis of NVDA revenue growth over the last 4 quarters."
+  expected_behavior: answer
+  expected_cells:
+    "NVDA|revenue|CY2024Q1": "26044.00"
+    "NVDA|revenue|CY2024Q2": "30040.00"
+    "NVDA|revenue|CY2024Q3": "35023.00"
+    "NVDA|revenue|CY2024Q4": "40223.00"
+  expected_plan:
+    - NVDA
+    - revenue
+    - 4 quarters
+    - summary
+
+- id: narrative_03
+  category: narrative
+  question: "How do MSFT and GOOG compare in Q4 2024? Summarize the key differences."
+  expected_behavior: answer
+  expected_cells:
+    "MSFT|revenue|CY2024Q4": "71197.00"
+    "MSFT|net_income|CY2024Q4": "27254.00"
+    "GOOG|revenue|CY2024Q4": "97225.00"
+    "GOOG|net_income|CY2024Q4": "27872.00"
+  expected_plan:
+    - MSFT
+    - GOOG
+    - revenue
+    - net_income
+    - summary
+
+# --- Adversarial / boundary (2 cases) ---
+
+- id: adv_01
+  category: adversarial
+  question: "apple income"
+  expected_behavior: ask
+  expected_cells: {}
+  notes: "Ambiguous ticker and metric — system should ask for clarification."
+
+- id: adv_02
+  category: adversarial
+  question: "What was NVDA revenue in 2010?"
+  expected_behavior: degrade
+  expected_cells: {}
+  notes: "Out of range — data not in cache / not available. Should degrade gracefully, not fabricate."
