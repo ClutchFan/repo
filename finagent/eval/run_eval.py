@@ -24,6 +24,129 @@ from typing import Callable
 
 import yaml
 
+# SEC URL constants — reuses the same base URLs and patterns as SECClient
+SEC_DATA_BASE = "https://data.sec.gov"
+SEC_WWW_BASE = "https://www.sec.gov"
+
+# Known ticker universe (offline fixture CIKs; live path resolves via resolver)
+# CIKs come from finagent.eval.fixtures.COMPANIES for the four demo tickers.
+KNOWN_TICKERS_OFFLINE = {
+    "AAPL": 320193,
+    "MSFT": 789019,
+    "NVDA": 1045810,
+    "GOOG": 1652044,
+}
+
+
+# ---------------------------------------------------------------------------
+# Baseline SEC URL helpers (pure, testable)
+# ---------------------------------------------------------------------------
+
+def companyfacts_url(cik: int) -> str:
+    """SEC XBRL companyfacts API URL for a CIK.
+
+    Matches the pattern used by SECClient.get_company_facts:
+    https://data.sec.gov/api/xbrl/companyfacts/CIK{padded:010d}.json
+    """
+    return f"{SEC_DATA_BASE}/api/xbrl/companyfacts/CIK{int(cik):010d}.json"
+
+
+def browse_edgar_url(cik: int, form_type: str = "10-Q") -> str:
+    """EDGAR browse page URL for a company's filings.
+
+    Pattern: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={padded}&type={form}&dateb=&owner=include&count=40
+    """
+    padded = f"{int(cik):010d}"
+    return (
+        f"{SEC_WWW_BASE}/cgi-bin/browse-edgar?"
+        f"action=getcompany&CIK={padded}&type={form_type}"
+        f"&dateb=&owner=include&count=40"
+    )
+
+
+def extract_case_tickers(case: dict, universe: set[str]) -> list[str]:
+    """Extract ticker symbols referenced in a golden case.
+
+    Uses the case's expected_cells keys first (most reliable),
+    then falls back to scanning the question text for known tickers.
+    Returns deduplicated tickers in sorted order.
+    """
+    tickers = set()
+
+    # 1. From expected_cells keys ("TICKER|alias|frame")
+    for key in case.get("expected_cells", {}):
+        parts = key.split("|")
+        if len(parts) >= 1 and parts[0] in universe:
+            tickers.add(parts[0])
+
+    # 2. From question text (fallback for adversarial cases with no cells)
+    if not tickers:
+        question = case.get("question", "")
+        for t in universe:
+            # Match whole word / uppercase ticker
+            if re.search(r"\b" + re.escape(t) + r"\b", question):
+                tickers.add(t)
+
+    return sorted(tickers)
+
+
+def build_sec_urls_for_case(case: dict, ticker_to_cik: dict[str, int]) -> list[str]:
+    """Build SEC source URLs for a golden case.
+
+    For each ticker referenced in the case, returns:
+      - companyfacts API URL
+      - EDGAR 10-Q browse page URL
+
+    Tickers not in ticker_to_cik are silently ignored.
+    """
+    universe = set(ticker_to_cik.keys())
+    tickers = extract_case_tickers(case, universe)
+    urls = []
+    for ticker in tickers:
+        cik = ticker_to_cik[ticker]
+        urls.append(companyfacts_url(cik))
+        urls.append(browse_edgar_url(cik, "10-Q"))
+    return urls
+
+
+def build_bare_prompt(question: str) -> tuple[str, str]:
+    """Build the bare baseline prompt (no SEC URLs).
+
+    Returns (system_prompt, user_message).
+    """
+    system = (
+        "You are a financial analyst. Answer the question with a table of "
+        "numbers if requested, or a brief summary. Be as accurate as possible."
+    )
+    return system, question
+
+
+def build_linked_prompt(question: str, urls: list[str]) -> tuple[str, str]:
+    """Build the linked baseline prompt (with concrete SEC URLs supplied).
+
+    The model is given the URLs verbatim but has no tools — it must use its
+    knowledge and interpret the URLs as context, not fetch them.
+
+    Returns (system_prompt, user_message).
+    """
+    if urls:
+        url_list = "\n".join(f"- {u}" for u in urls)
+        system = (
+            "You are a financial analyst. You may consult these SEC EDGAR sources:\n"
+            f"{url_list}\n\n"
+            "Answer the question with a table of numbers if requested, "
+            "or a brief summary. Be as accurate as possible and cite the "
+            "filings when you can."
+        )
+    else:
+        # No URLs available (e.g. adversarial case with no recognized ticker)
+        system = (
+            "You are a financial analyst with access to SEC EDGAR. "
+            "Answer the question with a table of numbers if requested, "
+            "or a brief summary. Be as accurate as possible."
+        )
+    return system, question
+
 
 # ---------------------------------------------------------------------------
 # Pure scoring functions
@@ -618,21 +741,22 @@ def _main():
         result = run_query(case["question"], llm, sec, resolver, profile)
         return score_run(result, case)
 
+    # --- Build live ticker->CIK map from resolver ---
+    live_ticker_cik = {}
+    for entry in resolver.index:
+        ticker = entry.get("ticker", "")
+        cik = entry.get("cik")
+        if ticker and cik:
+            live_ticker_cik[ticker.upper()] = int(cik)
+
     # --- Baseline runners ---
     def run_baseline(case, mode):
         question = case["question"]
         if mode == "bare":
-            system = (
-                "You are a financial analyst. Answer the question with a table of "
-                "numbers if requested, or a brief summary. Be as accurate as possible."
-            )
-            user_msg = question
+            system, user_msg = build_bare_prompt(question)
         else:  # linked
-            system = (
-                "You are a financial analyst with access to SEC EDGAR data. "
-                "Answer the question accurately using your knowledge of SEC filings."
-            )
-            user_msg = question
+            urls = build_sec_urls_for_case(case, live_ticker_cik)
+            system, user_msg = build_linked_prompt(question, urls)
 
         # For baseline, we use a simple text completion and score it
         try:

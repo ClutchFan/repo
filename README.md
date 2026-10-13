@@ -107,8 +107,8 @@ Golden values are fixture-contract values defined in `finagent/eval/fixtures.py`
 
 Two baselines are evaluated alongside the harness, both using the same underlying model:
 
-1. **Bare prompt** — the model with a single free-form prompt, no tools, no structured output. Emulates the ChatGPT web product.
-2. **Linked prompt** — bare prompt with SEC EDGAR context, to control for the advantage of internet access.
+1. **Bare prompt** — the model with a single free-form prompt, no tools, no structured output. No SEC URLs or data access of any kind. Emulates the ChatGPT web product with no retrieval.
+2. **Linked prompt** — the model is given concrete SEC EDGAR URLs (companyfacts API and 10-Q browse page for each ticker in the case) listed verbatim in the system prompt, but no tools and no actual fetching capability. This controls for the advantage of having direct source references, which a good model might memorize or infer from the URL structure. The model must produce answers from its parametric knowledge plus whatever interpretive value it gains from seeing the URL format.
 
 Baseline numbers are extracted heuristically from free-form text. Provenance validity is always ~0 for baselines (they produce no fact links). Hallucination rate is approximated from numeric mismatch.
 
@@ -120,7 +120,7 @@ Baseline numbers are extracted heuristically from free-form text. Provenance val
 python -m pytest -q
 ```
 
-This proves the scoring logic is correct. 125+ tests cover all metrics, boundary cases, the golden-yaml/fixture consistency check, and the end-to-end runner with scripted doubles.
+This proves the scoring logic is correct. 138 tests cover all metrics, boundary cases, the golden-yaml/fixture consistency check, baseline prompt construction (URL extraction, bare-vs-linked), and the end-to-end runner with scripted doubles.
 
 **Live (requires OPENAI_API_KEY + SEC contact):**
 

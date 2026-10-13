@@ -29,7 +29,166 @@ from finagent.eval.run_eval import (
     score_run,
     run_eval,
     _cell_value_matches,
+    companyfacts_url,
+    browse_edgar_url,
+    extract_case_tickers,
+    build_sec_urls_for_case,
+    build_bare_prompt,
+    build_linked_prompt,
+    KNOWN_TICKERS_OFFLINE,
 )
+
+
+# ---------------------------------------------------------------------------
+# Baseline SEC URL / prompt tests
+# ---------------------------------------------------------------------------
+
+def test_companyfacts_url_padded_cik():
+    """companyfacts URL uses 10-digit zero-padded CIK, matches SECClient pattern."""
+    url = companyfacts_url(320193)
+    assert url == "https://data.sec.gov/api/xbrl/companyfacts/CIK0000320193.json"
+    assert "CIK0000320193" in url
+
+
+def test_browse_edgar_url_structure():
+    """browse_edgar_url has the right shape with padded CIK and form type."""
+    url = browse_edgar_url(320193, "10-Q")
+    assert url.startswith("https://www.sec.gov/cgi-bin/browse-edgar?")
+    assert "CIK=0000320193" in url
+    assert "type=10-Q" in url
+    assert "action=getcompany" in url
+
+
+def test_extract_case_tickers_from_expected_cells():
+    """Tickers are extracted from expected_cells keys (most reliable)."""
+    case = {
+        "id": "multi_01",
+        "question": "Compare AAPL and MSFT revenue.",
+        "expected_cells": {
+            "AAPL|revenue|CY2024Q1": "100",
+            "MSFT|revenue|CY2024Q1": "200",
+        },
+    }
+    tickers = extract_case_tickers(case, {"AAPL", "MSFT", "NVDA", "GOOG"})
+    assert tickers == ["AAPL", "MSFT"]
+
+
+def test_extract_case_tickers_from_question_fallback():
+    """For cases with no expected_cells, tickers are parsed from question text."""
+    case = {
+        "id": "adv_01",
+        "question": "What was AAPL revenue?",
+        "expected_cells": {},
+    }
+    tickers = extract_case_tickers(case, {"AAPL", "MSFT", "NVDA", "GOOG"})
+    assert "AAPL" in tickers
+
+
+def test_extract_case_tickers_unknown_ignored():
+    """Tickers not in the universe are silently ignored — no crash."""
+    case = {
+        "id": "test",
+        "question": "What was TSLA and AAPL revenue?",
+        "expected_cells": {
+            "TSLA|revenue|CY2024Q1": "100",  # not in universe
+            "AAPL|revenue|CY2024Q1": "200",
+        },
+    }
+    tickers = extract_case_tickers(case, {"AAPL", "MSFT", "NVDA", "GOOG"})
+    assert "TSLA" not in tickers
+    assert "AAPL" in tickers
+
+
+def test_extract_case_tickers_empty_case():
+    """Case with no tickers anywhere → empty list, no crash."""
+    case = {
+        "id": "empty",
+        "question": "What is the meaning of life?",
+        "expected_cells": {},
+    }
+    tickers = extract_case_tickers(case, {"AAPL", "MSFT", "NVDA", "GOOG"})
+    assert tickers == []
+
+
+def test_build_sec_urls_for_case_has_companyfacts():
+    """Linked baseline URLs include companyfacts URL with correctly padded CIK."""
+    case = {
+        "id": "single_01",
+        "question": "What was AAPL revenue?",
+        "expected_cells": {"AAPL|revenue|CY2024Q1": "119580.00"},
+    }
+    ticker_cik = {"AAPL": 320193, "MSFT": 789019}
+    urls = build_sec_urls_for_case(case, ticker_cik)
+    # Should have 2 URLs for AAPL: companyfacts + browse
+    assert len(urls) == 2
+    assert "https://data.sec.gov/api/xbrl/companyfacts/CIK0000320193.json" in urls
+
+
+def test_build_sec_urls_for_case_multiple_tickers():
+    """Multi-company case gets URLs for each referenced ticker."""
+    case = {
+        "id": "multi_01",
+        "question": "Compare AAPL and MSFT.",
+        "expected_cells": {
+            "AAPL|revenue|CY2024Q1": "100",
+            "MSFT|revenue|CY2024Q1": "200",
+        },
+    }
+    ticker_cik = {"AAPL": 320193, "MSFT": 789019, "NVDA": 1045810}
+    urls = build_sec_urls_for_case(case, ticker_cik)
+    # 2 tickers x 2 URLs each = 4
+    assert len(urls) == 4
+    assert any("CIK0000320193" in u for u in urls)
+    assert any("CIK0000789019" in u for u in urls)
+
+
+def test_build_sec_urls_for_case_no_tickers():
+    """Case with no recognized tickers → empty URL list, no crash."""
+    case = {
+        "id": "adv_02",
+        "question": "What was XYZ revenue in 2010?",
+        "expected_cells": {},
+    }
+    ticker_cik = {"AAPL": 320193, "MSFT": 789019}
+    urls = build_sec_urls_for_case(case, ticker_cik)
+    assert urls == []
+
+
+def test_bare_prompt_has_no_sec_urls():
+    """Bare baseline prompt contains zero sec.gov URLs."""
+    system, user = build_bare_prompt("What was AAPL revenue?")
+    assert "sec.gov" not in system
+    assert "sec.gov" not in user
+
+
+def test_linked_prompt_has_sec_urls():
+    """Linked baseline system prompt lists SEC URLs verbatim."""
+    urls = [
+        "https://data.sec.gov/api/xbrl/companyfacts/CIK0000320193.json",
+        "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000320193&type=10-Q",
+    ]
+    system, user = build_linked_prompt("What was AAPL revenue?", urls)
+    assert "sec.gov" in system
+    assert "CIK0000320193" in system
+    # User message is just the question
+    assert user == "What was AAPL revenue?"
+    # URLs appear as a list
+    assert "- https://" in system
+
+
+def test_linked_prompt_empty_urls_fallback():
+    """If no URLs available, linked prompt degrades gracefully (no crash)."""
+    system, user = build_linked_prompt("What is finance?", [])
+    assert isinstance(system, str)
+    assert len(system) > 0
+    assert user == "What is finance?"
+
+
+def test_known_tickers_offline_matches_fixtures():
+    """KNOWN_TICKERS_OFFLINE CIKs match the fixtures module COMPANIES CIKs."""
+    from finagent.eval.fixtures import COMPANIES
+    for ticker in ("AAPL", "MSFT", "NVDA", "GOOG"):
+        assert KNOWN_TICKERS_OFFLINE[ticker] == COMPANIES[ticker]["cik"]
 
 
 # ---------------------------------------------------------------------------
