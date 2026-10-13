@@ -32,19 +32,6 @@ def _parse_number(token):
     return val, is_pct
 
 
-def _allowed_numbers(evidence_displays):
-    """Build a set of (Decimal, is_percent) tuples from evidence display strings.
-
-    Only display strings that parse as valid numbers are included.
-    """
-    result = set()
-    for d in evidence_displays:
-        parsed = _parse_number(d)
-        if parsed is not None:
-            result.add(parsed)
-    return result
-
-
 def _find_number_tokens(text):
     """Extract number tokens from text, excluding those inside frame tokens (CY2024Q1).
 
@@ -62,7 +49,7 @@ def render_claim_text(c):
     return c.text
 
 
-def verify_claims(claims, index, judge, allowed_companies, forbidden_companies, allowed_frames):
+def verify_claims(claims, index, judge, forbidden_companies, allowed_frames):
     """Verify a list of Claims against gates in order:
 
     1. interpretation claims -> auto-ok
@@ -73,6 +60,12 @@ def verify_claims(claims, index, judge, allowed_companies, forbidden_companies, 
     5. company gate: any forbidden company token (exact member match) -> reject
     6. frame gate: if allowed_frames non-empty, any frame token not in set -> reject
     7. judge(c) must return "supported"
+
+    Company scope is enforced exclusively via forbidden_companies (an explicit
+    forbidden-ticker set drawn from the fixed demo universe). Positive scoping
+    (allowed_companies) is deliberately not used: any ticker string outside the
+    universe is treated as in-scope by the company gate — out-of-scope rejection
+    applies only to universe tickers not in the current query scope.
 
     Returns a list of Verdict objects in the same order as the input claims.
     """

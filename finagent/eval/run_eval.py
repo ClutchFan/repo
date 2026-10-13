@@ -209,11 +209,26 @@ def _cell_value_matches(cell, index_entry, tol: Decimal = Decimal("0.01")) -> bo
 
     Both are compared as Decimals within tolerance.
     Returns False if either side cannot be parsed as Decimal.
+
+    Uses index_entry.cell_value when available (full-precision table-compatible
+    value, set for derived facts). Falls back to parsing index_entry.display
+    (which may be a 1-dp percent string or a raw display string).
     """
     if cell.value is None:
         return False
+
+    # Prefer cell_value (full precision, matches table format) when present
+    stored_str = getattr(index_entry, "cell_value", None)
+    if stored_str is None:
+        # Fall back to display string
+        stored_str = getattr(index_entry, "display", "")
+        if stored_str and stored_str.endswith("%"):
+            stored_str = stored_str[:-1]
+
+    if not stored_str:
+        return False
     try:
-        stored = Decimal(index_entry.display)
+        stored = Decimal(stored_str)
     except (InvalidOperation, AttributeError, ValueError):
         return False
     try:

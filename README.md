@@ -1,6 +1,6 @@
 # finagent — Hallucination-Resistant Financial Research Agent
 
-A financial research agent that answers natural-language questions about US public company fundamentals using SEC EDGAR XBRL data. The system is architected so the LLM never emits raw numbers: every numeric cell in output tables is computed deterministically from cached SEC facts, each with an immutable provenance link back to the original filing. Claims produced by the summarizer are verified against the evidence bundle before they reach the user; unsupported claims are either rewritten or downgraded. The result is near-zero hallucination on numeric content, at the cost of a more constrained output format.
+A financial research agent that answers natural-language questions about US public company fundamentals using SEC EDGAR XBRL data. The system is architected so the LLM never produces numbers used in output tables: every numeric table cell is computed deterministically from cached SEC facts, each with an immutable provenance link back to the original filing. Every number in the narrative is bound to evidence and independently verified before display. Claims produced by the summarizer are checked against the evidence bundle before they reach the user; unsupported claims are either rewritten or downgraded. The result is near-zero hallucination on numeric content, at the cost of a more constrained output format.
 
 Current scope covers four US tech tickers (AAPL, MSFT, NVDA, GOOG) across eight calendar quarters (CY2023Q1–CY2024Q4).
 
@@ -45,7 +45,7 @@ finagent --question "NVDA net income trend, last 4 quarters" --xlsx output/nvda-
 finagent --question "..." --profile path/to/profile.json --verbose
 ```
 
-XLSX export produces a three-sheet workbook: Table (the data table), Facts (every fact used, with provenance URLs), and Claims (summary claims with verdict status).
+XLSX export produces a three-sheet workbook: Comparison (the data table with hyperlinked cells and provenance comments), Provenance (every fact used — raw, YTD-differenced, and ratio-derived — with full provenance metadata), and Claims (summary claims with verdict status).
 
 ## Design Decisions
 
@@ -55,7 +55,7 @@ The pipeline runs in five phases: (1) the planner LLM resolves tickers, browses 
 
 ### Three Invariants
 
-1. **The LLM never emits numbers.** All numeric values in output tables come from deterministic computation over cached SEC facts (raw lookup, YTD differencing, or ratio derivation). The LLM only selects which metrics and periods to show — it does not produce numeric output.
+1. **The LLM never produces numbers used in output tables.** Every numeric table cell comes from deterministic computation over cached SEC facts (raw lookup, YTD differencing, or ratio derivation). The LLM selects which metrics and periods to show, and it may emit numbers in narrative claims — but every number in the narrative is bound to evidence and independently verified before display.
 2. **Provenance is unstrippable.** Every cell in the output table carries a `fact_id` that resolves in the evidence index to a fact with full provenance (accession number, filing date, form type, source URL, XBRL viewer URL). The verifier confirms that the cell's displayed value equals the stored fact value.
 3. **The LLM does semantic work only.** Interpretation claims (qualitative analysis) are permitted and auto-pass the number gate, but every datapoint claim must cite evidence whose display string contains the exact number used.
 
@@ -98,7 +98,7 @@ Golden values are fixture-contract values defined in `finagent/eval/fixtures.py`
 | Metric | Definition |
 |---|---|
 | Numeric accuracy | Fraction of golden table cells matched within 0.01 tolerance |
-| Provenance validity | Fraction of numeric cells with a valid fact_id whose linked fact value equals the shown value |
+| Provenance validity | Fraction of numeric table cells (raw + derived) whose fact_id resolves in the evidence index and whose linked value matches the shown value. N/A cells are excluded from the denominator. |
 | Hallucination rate | Fraction of claims that fail verification |
 | Task completion | Whether requested deliverables (table / summary) were produced |
 | Boundary correctness | Whether ask/degrade cases are handled appropriately (no fabrication) |
@@ -138,7 +138,7 @@ The markdown report contains three sections:
 - **Aggregate Comparison:** overall mean scores for each mode — the headline numbers.
 - **Per-Category Breakdown:** means grouped by category (single, trend, multi_company, narrative, adversarial).
 
-Expected outcome: the harness leads decisively on numeric accuracy (especially for derived values and YTD differences), provenance validity (~100% vs ~0%), and hallucination rate. Baselines may win on cost and latency, which is reported honestly.
+Expected outcome: the harness leads decisively on numeric accuracy (especially for derived values and YTD differences), provenance validity (100% of raw and derived table cells with numeric values have a valid fact_id whose value matches the cell — denominator excludes N/A cells; 0% for baselines which have no fact links), and hallucination rate. Baselines may win on cost and latency, which is reported honestly.
 
 ## Project Layout
 

@@ -20,6 +20,7 @@ from finagent.agent.loop import AgentLoop
 from finagent.agent.llm import PLAN_SCHEMA, CLAIMS_SCHEMA, VERDICT_SCHEMA
 from finagent.datasource.facts import quarter_facts
 from finagent.output.table import build_table
+from finagent.metrics import reconstruct_ratio_derived_facts
 from finagent.narrative.summarizer import (
     build_evidence_bundle,
     parse_claims,
@@ -76,7 +77,15 @@ def run_query(question, llm, sec, resolver, profile, judge=None, max_rewrites=2)
     for comp_facts in facts_by_company.values():
         all_facts.extend(quarter_facts(comp_facts))
 
-    bundle, index = build_evidence_bundle(all_facts, [])
+    # Reconstruct ratio-derived facts so their fact_ids appear in result.index
+    # and claims can cite them. Uses the same shared helper as xlsx.py provenance.
+    derived_facts = []
+    for comp, raw_facts in facts_by_company.items():
+        derived_facts.extend(
+            reconstruct_ratio_derived_facts(raw_facts, table.rows, comp.ticker)
+        )
+
+    bundle, index = build_evidence_bundle(all_facts, derived_facts)
 
     # --- Phase 4: Summarizer + verify + rewrite loop ---
     msgs = [{
@@ -95,7 +104,7 @@ def run_query(question, llm, sec, resolver, profile, judge=None, max_rewrites=2)
     downgraded = 0
 
     if judge is None:
-        judge = lambda c: _judge_with_llm(llm, c, bundle)
+        judge = lambda c: _judge_with_llm(llm, c, index)
 
     for attempt in range(max_rewrites + 1):
         data = llm.complete_json(SUMMARIZER_SYSTEM, msgs, CLAIMS_SCHEMA)
@@ -104,7 +113,6 @@ def run_query(question, llm, sec, resolver, profile, judge=None, max_rewrites=2)
             claims,
             index,
             judge,
-            allowed_companies=scope,
             forbidden_companies=forbidden,
             allowed_frames=set(table.columns),
         )
@@ -165,18 +173,34 @@ def _plan_with_priming(llm, tools, question, profile):
     return loop.run(question, profile_summary, None, known_provider=known_provider)
 
 
-def _judge_with_llm(llm, claim, bundle):
-    """Default judge: ask the LLM whether the claim is supported by evidence."""
+def _judge_with_llm(llm, claim, index):
+    """Default judge: ask the LLM whether the claim is supported by evidence.
+
+    Sends only the evidence entries whose ids appear in the claim's evidence_ids,
+    not the entire bundle. If a claim cites nothing, sends an empty evidence list.
+    """
     JUDGE_SYSTEM = (
         "Judge whether the claim is supported, contradicted, or not_grounded "
-        "from the evidence bundle only. Respond with {\"verdict\": ...}."
+        "from the cited evidence only. Respond with {\"verdict\": ...}."
     )
+    # Build a minimal evidence list containing only cited entries
+    cited_items = []
+    for eid in claim.evidence_ids:
+        e = index.get(eid)
+        if e is None:
+            continue
+        cited_items.append({
+            "fact_id": eid,
+            "display": e.display,
+            "company": getattr(e, "company", None),
+            "frame": getattr(e, "frame", None),
+        })
     out = llm.complete_json(
         JUDGE_SYSTEM,
         [{
             "role": "user",
             "content": json.dumps(
-                {"claim": claim.text, "evidence": bundle},
+                {"claim": claim.text, "evidence": cited_items},
                 ensure_ascii=False,
             ),
         }],

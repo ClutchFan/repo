@@ -891,3 +891,414 @@ def test_covered_tickers_includes_aapl():
     assert "NVDA" in COVERED_TICKERS
     assert "GOOG" in COVERED_TICKERS
     assert len(COVERED_TICKERS) == 4
+
+
+# ---------------------------------------------------------------------------
+# Test 13: C1 — ratio-derived cell fact_ids appear in result.index
+# ---------------------------------------------------------------------------
+
+GROSS_MARGIN_PLAN = {
+    "final": {
+        "companies": [{"ticker": "AAPL", "cik": 320193, "name": "Apple Inc."}],
+        "line_items": [
+            {
+                "alias": "gross_margin",
+                "concepts": ["us-gaap:GrossProfit", "us-gaap:Revenues"],
+                "unit": "USD",
+                "scaling": "millions",
+                "kind": "derived",
+                "formula": "gross_profit/revenue",
+            }
+        ],
+        "periods": {"type": "last_n_quarters", "n": 1},
+        "outputs": ["table"],
+    }
+}
+
+
+def test_ratio_derived_facts_in_result_index(tmp_path):
+    """A gross_margin plan produces ratio cell fact_ids in result.index,
+    and the index display uses 1-dp percent format (matching summarizer)."""
+    sec = FakeSEC()
+    resolver = TickerResolver(sec)
+    tools = DataTools(sec, resolver)
+
+    raw_facts = tools._facts_for(320193)
+    from finagent.datasource.facts import quarter_facts
+    qf = quarter_facts(raw_facts)
+    rev_fact = [f for f in qf if "Revenues" in f.concept][0]
+    gp_fact = [f for f in qf if "GrossProfit" in f.concept][0]
+
+    from finagent.metrics import ratio
+    ratio_d = ratio(gp_fact, rev_fact)
+    ratio_fact_id = ratio_d.fact_id
+
+    # Claims payload that cites the ratio fact_id with 1-dp percent string
+    ratio_claims = {
+        "claims": [
+            {
+                "id": "c1",
+                "text": f"AAPL gross margin in CY2024Q1 was 41.8%.",
+                "evidence_ids": [ratio_fact_id],
+                "claim_type": "datapoint",
+            },
+        ]
+    }
+
+    llm = ScriptedLLM([
+        {"tool": "resolve_ticker", "args": {"ticker": "AAPL"}},
+        GROSS_MARGIN_PLAN,
+        ratio_claims,
+    ])
+
+    profile_path = tmp_path / "profile.json"
+    profile = Profile(
+        watchlist=[Company("AAPL", 320193, "Apple Inc.")],
+        metric_aliases={},
+        default_quarters=4,
+    )
+    ProfileStore(profile_path).save(profile)
+    profile_obj = ProfileStore(profile_path).load()
+
+    def fake_judge(claim):
+        return "supported"
+
+    result = run_query(
+        question="What was AAPL gross margin?",
+        llm=llm,
+        sec=sec,
+        resolver=resolver,
+        profile=profile_obj,
+        judge=fake_judge,
+        max_rewrites=0,
+    )
+
+    # Ratio fact_id must be in the result index
+    assert ratio_fact_id in result.index, (
+        f"Ratio fact_id {ratio_fact_id} not found in result.index. "
+        f"Keys: {list(result.index.keys())[:5]}..."
+    )
+    # Display format must be 1-dp percent (summarizer style, not 6-dp table style)
+    entry = result.index[ratio_fact_id]
+    assert entry.display == "41.8%", f"Expected '41.8%', got {entry.display!r}"
+    # The ratio cell in the table also has this fact_id
+    ratio_row = [r for r in result.table.rows if r.formula == "gross_profit/revenue"][0]
+    assert ratio_row.cells[0].fact_id == ratio_fact_id
+
+
+def test_ratio_derived_claim_with_1dp_percent_passes_verification(tmp_path):
+    """A claim citing a ratio derived fact id and stating the 1-dp percent
+    string PASSES verification; a wrong number fails."""
+    sec = FakeSEC()
+    resolver = TickerResolver(sec)
+    tools = DataTools(sec, resolver)
+
+    raw_facts = tools._facts_for(320193)
+    from finagent.datasource.facts import quarter_facts
+    qf = quarter_facts(raw_facts)
+    rev_fact = [f for f in qf if "Revenues" in f.concept][0]
+    gp_fact = [f for f in qf if "GrossProfit" in f.concept][0]
+
+    from finagent.metrics import ratio
+    ratio_d = ratio(gp_fact, rev_fact)
+    ratio_fact_id = ratio_d.fact_id
+
+    # Good claim: 41.8% matches the 1-dp evidence display
+    good_claim = {
+        "claims": [
+            {
+                "id": "c1",
+                "text": "AAPL gross margin was 41.8%.",
+                "evidence_ids": [ratio_fact_id],
+                "claim_type": "datapoint",
+            },
+        ]
+    }
+    # Bad claim: wrong percentage
+    bad_claim = {
+        "claims": [
+            {
+                "id": "c1",
+                "text": "AAPL gross margin was 50.0%.",
+                "evidence_ids": [ratio_fact_id],
+                "claim_type": "datapoint",
+            },
+        ]
+    }
+
+    def fake_judge(claim):
+        return "supported"
+
+    # Good claim passes
+    llm_good = ScriptedLLM([
+        {"tool": "resolve_ticker", "args": {"ticker": "AAPL"}},
+        GROSS_MARGIN_PLAN,
+        good_claim,
+    ])
+    profile_path = tmp_path / "profile.json"
+    profile = Profile(
+        watchlist=[Company("AAPL", 320193, "Apple Inc.")],
+        metric_aliases={},
+        default_quarters=4,
+    )
+    ProfileStore(profile_path).save(profile)
+    profile_obj = ProfileStore(profile_path).load()
+
+    result_good = run_query(
+        question="gross margin",
+        llm=llm_good,
+        sec=sec,
+        resolver=resolver,
+        profile=profile_obj,
+        judge=fake_judge,
+        max_rewrites=0,
+    )
+    assert result_good.verdicts[0].ok is True, (
+        f"Good 1-dp ratio claim should pass: {result_good.verdicts[0].reason}"
+    )
+
+    # Bad claim fails
+    llm_bad = ScriptedLLM([
+        {"tool": "resolve_ticker", "args": {"ticker": "AAPL"}},
+        GROSS_MARGIN_PLAN,
+        bad_claim,
+    ])
+    result_bad = run_query(
+        question="gross margin",
+        llm=llm_bad,
+        sec=sec,
+        resolver=resolver,
+        profile=profile_obj,
+        judge=fake_judge,
+        max_rewrites=0,
+    )
+    assert result_bad.verdicts[0].ok is False
+    assert "unsupported" in result_bad.verdicts[0].reason or "50.0" in result_bad.verdicts[0].reason
+
+
+# ---------------------------------------------------------------------------
+# Test 14: C1 — provenance_validity scores ratio cells valid via Result.index
+# ---------------------------------------------------------------------------
+
+def test_provenance_validity_includes_ratio_cells(tmp_path):
+    """provenance_validity from run_eval.score_run counts ratio-derived cells
+    in the denominator and marks them good when the Result index is used."""
+    from finagent.eval.run_eval import score_run
+
+    sec = FakeSEC()
+    resolver = TickerResolver(sec)
+    tools = DataTools(sec, resolver)
+
+    raw_facts = tools._facts_for(320193)
+    from finagent.datasource.facts import quarter_facts
+    qf = quarter_facts(raw_facts)
+    rev_fact = [f for f in qf if "Revenues" in f.concept][0]
+    gp_fact = [f for f in qf if "GrossProfit" in f.concept][0]
+
+    from finagent.metrics import ratio
+    ratio_d = ratio(gp_fact, rev_fact)
+    ratio_fact_id = ratio_d.fact_id
+
+    ratio_claims = {
+        "claims": [
+            {
+                "id": "c1",
+                "text": "AAPL gross margin was 41.8%.",
+                "evidence_ids": [ratio_fact_id],
+                "claim_type": "datapoint",
+            },
+        ]
+    }
+
+    llm = ScriptedLLM([
+        {"tool": "resolve_ticker", "args": {"ticker": "AAPL"}},
+        GROSS_MARGIN_PLAN,
+        ratio_claims,
+    ])
+
+    profile_path = tmp_path / "profile.json"
+    profile = Profile(
+        watchlist=[Company("AAPL", 320193, "Apple Inc.")],
+        metric_aliases={},
+        default_quarters=4,
+    )
+    ProfileStore(profile_path).save(profile)
+    profile_obj = ProfileStore(profile_path).load()
+
+    def fake_judge(claim):
+        return "supported"
+
+    result = run_query(
+        question="gross margin",
+        llm=llm,
+        sec=sec,
+        resolver=resolver,
+        profile=profile_obj,
+        judge=fake_judge,
+        max_rewrites=0,
+    )
+
+    golden = {
+        "expected_behavior": "produce_table",
+        "expected_cells": {},
+    }
+    scores = score_run(result, golden)
+
+    # provenance_validity should be 1.0 — ratio cell has fact_id in index
+    # and value matches (the 1-dp percent display vs 6-dp table value should
+    # both represent the same ratio within tolerance).
+    assert scores["provenance_validity"] == 1.0, (
+        f"Expected provenance_validity=1.0 for ratio cells, got {scores['provenance_validity']}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 15: I3 — judge receives only cited evidence, not full bundle
+# ---------------------------------------------------------------------------
+
+def test_judge_receives_only_cited_evidence(tmp_path):
+    """The default LLM judge payload contains only the claim's cited evidence
+    entry, not unrelated entries from the full bundle."""
+    sec = FakeSEC()
+    resolver = TickerResolver(sec)
+    tools = DataTools(sec, resolver)
+
+    raw_facts = tools._facts_for(320193)
+    from finagent.datasource.facts import quarter_facts
+    qf = quarter_facts(raw_facts)
+    rev_fact = [f for f in qf if "Revenues" in f.concept][0]
+    gp_fact = [f for f in qf if "GrossProfit" in f.concept][0]
+
+    # Plan with two line items: revenue + gross_profit (both raw, not ratio)
+    two_item_plan = {
+        "final": {
+            "companies": [{"ticker": "AAPL", "cik": 320193, "name": "Apple Inc."}],
+            "line_items": [
+                {
+                    "alias": "revenue",
+                    "concepts": ["us-gaap:Revenues"],
+                    "unit": "USD",
+                    "scaling": "millions",
+                },
+                {
+                    "alias": "gross_profit",
+                    "concepts": ["us-gaap:GrossProfit"],
+                    "unit": "USD",
+                    "scaling": "millions",
+                },
+            ],
+            "periods": {"type": "last_n_quarters", "n": 1},
+            "outputs": ["table"],
+        }
+    }
+
+    # Claim cites ONLY the revenue fact_id, not gross_profit
+    claims_payload = {
+        "claims": [
+            {
+                "id": "c1",
+                "text": "AAPL revenue was 119580.00.",
+                "evidence_ids": [rev_fact.fact_id],
+                "claim_type": "datapoint",
+            },
+        ]
+    }
+
+    recorded_content = []
+
+    class JudgeRecordingLLM:
+        def __init__(self, outs):
+            self.outs = list(outs)
+            self.i = 0
+
+        def complete_json(self, system, messages, schema, tools=None):
+            self.i += 1
+            if "judge" in system.lower() or "verdict" in system.lower():
+                # This is a judge call — record the message content
+                recorded_content.append(messages[0]["content"])
+                return {"verdict": "supported"}
+            if self.i - 1 >= len(self.outs):
+                raise RuntimeError(f"out of responses at call {self.i}")
+            return self.outs[self.i - 1]
+
+    llm = JudgeRecordingLLM([
+        {"tool": "resolve_ticker", "args": {"ticker": "AAPL"}},
+        two_item_plan,
+        claims_payload,
+    ])
+
+    profile_path = tmp_path / "profile.json"
+    profile = Profile(
+        watchlist=[Company("AAPL", 320193, "Apple Inc.")],
+        metric_aliases={},
+        default_quarters=4,
+    )
+    ProfileStore(profile_path).save(profile)
+    profile_obj = ProfileStore(profile_path).load()
+
+    result = run_query(
+        question="What was AAPL revenue?",
+        llm=llm,
+        sec=sec,
+        resolver=resolver,
+        profile=profile_obj,
+        judge=None,  # use default LLM judge
+        max_rewrites=0,
+    )
+
+    # We should have recorded a judge call
+    assert len(recorded_content) >= 1, "No judge call was recorded"
+
+    import json
+    judge_msg = json.loads(recorded_content[0])
+    evidence_list = judge_msg["evidence"]
+
+    # The cited evidence (revenue fact) must be present
+    cited_ids = {e["fact_id"] for e in evidence_list}
+    assert rev_fact.fact_id in cited_ids, "Cited revenue fact should be in judge evidence"
+
+    # The gross_profit fact (not cited) must NOT be in the judge evidence
+    assert gp_fact.fact_id not in cited_ids, (
+        f"Unrelated gross_profit fact should NOT be in judge evidence, "
+        f"but got ids: {cited_ids}"
+    )
+
+
+def test_judge_with_no_cited_evidence_sends_empty_list(tmp_path):
+    """A claim with empty evidence_ids sends an empty evidence list to the judge."""
+    sec = FakeSEC()
+    resolver = TickerResolver(sec)
+    tools = DataTools(sec, resolver)
+
+    raw_facts = tools._facts_for(320193)
+    from finagent.datasource.facts import quarter_facts
+    qf = quarter_facts(raw_facts)
+    rev_fact = [f for f in qf if "Revenues" in f.concept][0]
+
+    # Interpretation claim — auto-passes before judge, so use a datapoint
+    # claim that has missing evidence id to test... actually let's use the
+    # judge function directly to be precise.
+    from finagent.app import _judge_with_llm
+    from finagent.models import Claim
+
+    recorded_content = []
+
+    class RecordingLLM:
+        def complete_json(self, system, messages, schema, tools=None):
+            recorded_content.append(messages[0]["content"])
+            return {"verdict": "supported"}
+
+    llm = RecordingLLM()
+    index = {
+        rev_fact.fact_id: type("E", (), {"display": "119580.00", "company": "AAPL", "frame": "CY2024Q1"})(),
+    }
+
+    # Claim with no evidence_ids
+    empty_claim = Claim("c1", "Some claim.", (), "datapoint")
+    # Note: in real flow, datapoint without evidence is rejected at gate 2
+    # before reaching judge. We just test the judge function contract.
+    _judge_with_llm(llm, empty_claim, index)
+
+    import json
+    judge_msg = json.loads(recorded_content[0])
+    assert judge_msg["evidence"] == [], "Claim with no citations should send empty evidence list"

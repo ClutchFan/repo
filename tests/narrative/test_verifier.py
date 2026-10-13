@@ -42,7 +42,7 @@ def judge_supported(c):
 
 
 idx = {"f1": type("E", (), {"display": "5.4%", "company": "AAPL", "frame": "CY2024Q1"})()}
-ARGS = dict(index=idx, judge=judge_supported, allowed_companies={"AAPL"},
+ARGS = dict(index=idx, judge=judge_supported,
             forbidden_companies={"MSFT", "GOOG", "NVDA"}, allowed_frames={"CY2024Q1"})
 
 
@@ -81,7 +81,7 @@ def test_raw_fact_display_and_gate1():
 
     local_args = dict(
         index=index, judge=judge_supported,
-        allowed_companies={"AAPL"}, forbidden_companies=set(),
+        forbidden_companies=set(),
         allowed_frames={"CY2024Q1"},
     )
     results = verify_claims([good, bad], **local_args)
@@ -201,7 +201,7 @@ def test_number_normalization_commas():
     c = Claim("c", "Revenue was 119,580.00.", ("f_rev",), "datapoint")
     local_args = dict(
         index=index, judge=judge_supported,
-        allowed_companies={"AAPL"}, forbidden_companies=set(),
+        forbidden_companies=set(),
         allowed_frames={"CY2024Q1"},
     )
     results = verify_claims([c], **local_args)
@@ -215,7 +215,7 @@ def test_numeric_equality_leading_dot_decimal():
     local_idx = {"f1": type("E", (), {"display": "0.5%", "company": "AAPL", "frame": "CY2024Q1"})()}
     local_args = dict(
         index=local_idx, judge=judge_supported,
-        allowed_companies={"AAPL"}, forbidden_companies=set(),
+        forbidden_companies=set(),
         allowed_frames={"CY2024Q1"},
     )
     c = Claim("c", "AAPL grew .5%.", ("f1",), "datapoint")
@@ -228,7 +228,7 @@ def test_numeric_equality_dot_five_not_five():
     local_idx = {"f1": type("E", (), {"display": "5", "company": "AAPL", "frame": "CY2024Q1"})()}
     local_args = dict(
         index=local_idx, judge=judge_supported,
-        allowed_companies={"AAPL"}, forbidden_companies=set(),
+        forbidden_companies=set(),
         allowed_frames={"CY2024Q1"},
     )
     c = Claim("c", "AAPL had .5 widgets.", ("f1",), "datapoint")
@@ -242,7 +242,7 @@ def test_numeric_equality_trailing_zeros():
     local_idx = {"f1": type("E", (), {"display": "5.4%", "company": "AAPL", "frame": "CY2024Q1"})()}
     local_args = dict(
         index=local_idx, judge=judge_supported,
-        allowed_companies={"AAPL"}, forbidden_companies=set(),
+        forbidden_companies=set(),
         allowed_frames={"CY2024Q1"},
     )
     c = Claim("c", "AAPL revenue grew 5.40%.", ("f1",), "datapoint")
@@ -257,7 +257,7 @@ def test_numeric_equality_integer_form():
     c = Claim("c", "AAPL revenue was 119580.", ("f_rev",), "datapoint")
     local_args = dict(
         index=index, judge=judge_supported,
-        allowed_companies={"AAPL"}, forbidden_companies=set(),
+        forbidden_companies=set(),
         allowed_frames={"CY2024Q1"},
     )
     results = verify_claims([c], **local_args)
@@ -269,7 +269,7 @@ def test_numeric_equality_percent_flag_must_match():
     local_idx = {"f1": type("E", (), {"display": "5.4%", "company": "AAPL", "frame": "CY2024Q1"})()}
     local_args = dict(
         index=local_idx, judge=judge_supported,
-        allowed_companies={"AAPL"}, forbidden_companies=set(),
+        forbidden_companies=set(),
         allowed_frames={"CY2024Q1"},
     )
     c = Claim("c", "AAPL had 5.4 widgets.", ("f1",), "datapoint")

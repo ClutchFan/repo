@@ -16,8 +16,7 @@ from openpyxl import Workbook
 from openpyxl.comments import Comment
 
 from finagent.datasource.facts import quarter_facts
-from finagent.datasource.taxonomy import pick_concept
-from finagent.metrics import ratio
+from finagent.metrics import reconstruct_ratio_derived_facts
 
 
 def _build_fact_index(result):
@@ -37,8 +36,6 @@ def _build_fact_index(result):
     for company, raw_facts in result.facts_by_company.items():
         # Source 1 + 2: raw facts AND quarter_facts output (covers native + YTD_DIFF)
         all_qf = quarter_facts(raw_facts)
-        concepts = {f.concept for f in raw_facts}
-        qf_map = {(f.concept, f.frame): f for f in all_qf if f.frame}
 
         for f in all_qf:
             if f.provenance.raw_value == "derived:YTD_DIFF":
@@ -47,32 +44,23 @@ def _build_fact_index(result):
                 index[f.fact_id] = {"type": "raw", "fact": f}
 
         # Source 3: ratio formula rows — reconstruct DerivedFact per cell frame
-        for row in result.table.rows:
-            if row.formula != "gross_profit/revenue":
+        # Uses the shared helper from metrics.py (same one used by app.py for
+        # the evidence bundle) to ensure consistent fact IDs and values.
+        ratio_derived = reconstruct_ratio_derived_facts(raw_facts, result.table.rows, company.ticker)
+        # Build a fact_id -> Fact lookup for input facts so we can attach
+        # numerator/denominator metadata for comments and hyperlinks.
+        fact_by_id = {f.fact_id: f for f in all_qf}
+        for d in ratio_derived:
+            gp = fact_by_id.get(d.input_fact_ids[0])
+            rv = fact_by_id.get(d.input_fact_ids[1])
+            if gp is None or rv is None:
                 continue
-            # Only process rows for this company
-            if row.company != company.ticker:
-                continue
-
-            gpc = pick_concept("gross_profit", concepts)
-            rvc = pick_concept("revenue", concepts)
-            if gpc is None or rvc is None:
-                continue
-
-            for cell in row.cells:
-                if cell.fact_id is None:
-                    continue
-                gp = qf_map.get((gpc, cell.frame))
-                rv = qf_map.get((rvc, cell.frame))
-                if gp is None or rv is None:
-                    continue
-                d = ratio(gp, rv)
-                index[d.fact_id] = {
-                    "type": "ratio",
-                    "numerator": gp,
-                    "denominator": rv,
-                    "derived": d,
-                }
+            index[d.fact_id] = {
+                "type": "ratio",
+                "numerator": gp,
+                "denominator": rv,
+                "derived": d,
+            }
 
     return index
 

@@ -36,14 +36,16 @@ def build_evidence_bundle(facts, derived):
     for d in derived:
         if d.formula in ("ratio", "yoy"):
             disp = f"{(d.value * 100).quantize(Decimal('0.1'))}%"
+            cell_val = str((d.value * 100).quantize(Decimal("0.000001")))
         else:
             disp = str(d.value)
+            cell_val = str(d.value)
         items.append({
             "fact_id": d.fact_id,
             "label": d.formula,
             "display": disp,
         })
-        index[d.fact_id] = type("E", (), {"display": disp})()
+        index[d.fact_id] = type("E", (), {"display": disp, "cell_value": cell_val})()
 
     return {"items": items}, index
 
